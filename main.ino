@@ -5,7 +5,6 @@
 // Biblioteki od Sensora i Wyswietacza OLED
 #include "SSD1306.h"                                        // Biblioteka do sterownika wyswietlacza OLED
 #include "Wire.h"
-//#include "I2Cdev.h"
 #include "MPU6050.h"
 #include "math.h"
 
@@ -22,7 +21,6 @@ BLECharacteristic *characteristicTX;
 #include <LoRa.h>
 #include <Arduino.h>
 
-//#include <WiFi.h>
 //            Podlaczenie pinow OLED ( wbudowany ; 128x64 ) do ESP32 GPIO  
 
 // OLED_SDA -- GPIO4
@@ -42,20 +40,15 @@ BLECharacteristic *characteristicTX;
 // GPIO26 -- SX1278's IRQ(Interrupt Request)
 
 
-
 SSD1306 display( 0x3c , 4 , 15 );                             // Z biblioteki SSD1306Wire.h ( ADRES , SDA, SCL ) 
 MPU6050 czujnik( 0x68 );   // podaje mu domyslnie adres 0x68 sprawdzic , mozna tez zerknac na faktyczny adres oleda 
-/*
-WiFiServer server(80);
 
-IPAddress ip(192, 168, 0, 80);            // IP address of the server
-IPAddress gateway(192,168,0,1);           // gateway of your network
-IPAddress subnet(255,255,255,0);          // subnet mask of your network 
-*/
 #define interruptPin_Gora 32 
 #define interruptPin_Dol 33 
 #define interruptPin_Enter 12 
 #define interruptPin_Esc 13 
+
+#define BUTTON_PIN_BITMASK 0x200000000 // 2^33 in hex - od Sleepa
 
 // od SX1278
 #define SS      18
@@ -64,7 +57,8 @@ IPAddress subnet(255,255,255,0);          // subnet mask of your network
 #define BAND    868E6  //915E6 
 
 #define SERVICE_UUID   "ab0828b1-198e-4351-b779-901fa0e0371e"
-#define CHARACTERISTIC_UUID_TX  "0972EF8C-7613-4075-AD52-756F33D4DA91"
+#define CHARACTERISTIC_UUID_TX  "0972EF8C-7613-4075-AD52-756F33D4DA91"  
+
 #define CHARACTERISTIC_UUID_RX  "4ac8a682-9736-4e5d-932b-e9b31405049c"
 
 void przycisk_gora();
@@ -75,8 +69,6 @@ void Analiza_pomiarow();
 void Transmisja_LoRa();
 void Sprawdz_Interfejsy();
 void Transmisja_WiFi();
-
-
 
 long debounce_time = 200;             // debouncing w milisec
 volatile unsigned long last_micros;
@@ -89,7 +81,7 @@ int l_menu_pre = 0; // zmienna by zapamiętać poprzedni stan l_menu
 
 // zmienne MPU6050
 const float pi = 3.141592;
-const float sample_no = 100;    // liczba próbek dla aproksymacji
+const float sample_no = 25;    // liczba próbek dla aproksymacji
   
 int16_t ax, ay, az;  // define accel as ax,ay,az
 float x , y , z;
@@ -104,15 +96,11 @@ int16_t gx, gy, gz;  // define gyro as gx,gy,gz
 int counter = 0;
 bool Lora_ON = false;
 
-// WiFi
-const char* ssid     = "UPCE5A8F69";
-const char* password = "Tz2pjzsxJ4sn";
-bool WiFi_ON = false;
-
 // BLE
 bool deviceConnected = false;
 bool BLE_ON = false;
-float pomiar = 10.50;
+//float pomiar = 10.50;
+
 
 /* *********************** Klasa do callbacku BLE  *************** */
 
@@ -130,10 +118,12 @@ class ServerCallbacks: public BLEServerCallbacks {
 
 void setup() {
   Wire.begin();     // join I2C bus
-  Serial.begin(38400); // wylacznie pod testowanie na PC
+  Serial.begin(115200); // wylacznie pod testowanie na PC
   Serial.println();
   
   while(!Serial);
+
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_34,1); //1 = High, 0 = Low
 
   pinMode(16 , OUTPUT );
   digitalWrite(16, LOW);                                    // set GPIO16 low to reset OLED
@@ -175,31 +165,6 @@ void setup() {
   }
 
   Serial.println("LoRa Initial Successfull!");
-/*
-  Serial.println("WiFi Initializing..");
-    pinMode(23, OUTPUT);          // dioda sygnalizacyjna WiFi
-    pinMode(23, LOW);
-    Serial.println();
-    Serial.println();
-    Serial.print("Connecting to ");
-    Serial.println(ssid);  
-
-  WiFi.config(ip, gateway, subnet);       // forces to use the fix IP
-  WiFi.begin(ssid, password );                 // connects to the WiFi router
-
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.println("Connecting to WiFi..");
-    }
-
-    Serial.println("");
-    Serial.println("WiFi connected.");
-    Serial.println("IP address: ");
-    Serial.println(WiFi.localIP());
-    
-    server.begin();
-
-*/
 
 // BLE
   pinMode( 17, OUTPUT);
@@ -213,9 +178,9 @@ void setup() {
                        CHARACTERISTIC_UUID_TX,
                        //BLECharacteristic::PROPERTY_NOTIFY |
                        BLECharacteristic::PROPERTY_WRITE
-                     );  
-
-  characteristicTX->addDescriptor(new BLE2902());
+                     );
+                        
+  //characteristicTX->addDescriptor(new BLE2902());
 
   BLECharacteristic *characteristic = service->createCharacteristic(
                CHARACTERISTIC_UUID_RX,
@@ -241,7 +206,8 @@ void loop() {
 
       if ( l_menu == 0 ){
         if ( y_kursor == 0 ) l_menu = 1;
-        if ( y_kursor == 10 ) l_menu = 2;        
+        if ( y_kursor == 10 ) l_menu = 2;
+        if( y_kursor == 30 ) l_menu = 4;        
       }
 
       else if ( l_menu == 1 ){
@@ -259,15 +225,6 @@ void loop() {
           Lora_ON = false;
         }
 
-        if ( y_kursor == 10 && WiFi_ON == false){
-          Serial.println("Wlaczono WiFi.");
-          WiFi_ON = true;
-        }
-        else if ( y_kursor == 10 && WiFi_ON == true ){
-          Serial.println("Wylaczono WiFi.");
-          WiFi_ON = false;
-        }
-
         if ( y_kursor == 20 && BLE_ON == false ){
           Serial.println("Wlaczono BLE.");
           BLE_ON = true;
@@ -278,6 +235,17 @@ void loop() {
         }
         
       }
+
+      else if ( l_menu == 4 ){
+        if ( y_kursor == 30 ){
+          l_menu = 41;
+        }
+      }
+
+      else if ( l_menu == 41 ){
+        l_menu = 42;
+      }
+      
       Enter = false;
     }
 
@@ -304,7 +272,6 @@ void wyswietl_menu( int l_menu ){
                 display.drawString( 15 , 20 , "3. Opcje");
                 display.drawString( 15 , 30 , "4. Uspij");
                 
-                display.drawString( 15 , 40 , "5. Zresetuj");
                 display.drawString( x_kursor , y_kursor , "<-");    // rysuj kursor 
                 
                 break;
@@ -319,15 +286,25 @@ void wyswietl_menu( int l_menu ){
     
 
     case 2:     display.drawString(15 , 0 , "LoRa :");
-                display.drawString(15, 10 , "WiFi :");
                 display.drawString(15, 20 , "BLE :");
                 Sprawdz_Interfejsy();
 
                 display.drawString( x_kursor , y_kursor , "<-");    // rysuj kursor 
                 display.drawString(15,50, "Esc aby wrocic");
                 break;
+
+    case 4:     display.drawString( 15 , 30 , "Przejdz w tryb uspienia" );
+                break;
+
+    case 41:    display.drawString( 15 , 20 , "Jestes pewien ?");
+                display.drawString( 15, 30 , " Enter - Tak / Esc - Nie ");
+                break;
+
+    case 42:    display.drawString( 15, 30 , "No to ide spac.");
+                delay(2000);
+                esp_deep_sleep_start();
+                break;            
   }
-    
   display.display();
 }
 
@@ -359,13 +336,6 @@ void Analiza_pomiarow(){
   ay_sum = 0;
   az_sum = 0;
 
-/*
-  Serial.print(angle_x);
-  Serial.print("\t"); // \t = tablator 
-  Serial.print(angle_y);
-  Serial.print("\t"); // \t = tablator   
-  Serial.println(angle_z);
-*/
   }  
 }
 
@@ -418,17 +388,6 @@ void Sprawdz_Interfejsy(){
       digitalWrite( 22 , LOW);   
    } 
 
-   if ( WiFi_ON == true ){
-    display.drawString(70, 10 , "ON");
-    Transmisja_WiFi();             
-   }
-
-   else{
-    display.drawString(70 , 10 , "OFF");
-    // zakoncz WiFi
-    digitalWrite(23 , LOW );
-   }
-
    if ( BLE_ON == true ){
     display.drawString(70 , 20 , "ON");
     Transmisja_BLE();
@@ -439,45 +398,18 @@ void Sprawdz_Interfejsy(){
    }
 }
 
-void Transmisja_WiFi(){
-/*
- digitalWrite( 23, HIGH );
-
- WiFiClient client = server.available();   // listen for incoming clients / sprawdzamy czy klient sie polaczyl
-
-  if (client) {
-    if (client.connected()) {
-      Serial.println(".");
-      //String request = client.readStringUntil('\r');    // receives the message from the client
-      //Serial.print("From client: "); Serial.println(request);
-      client.flush();
-      client.print("X : "); // sends the answer to the client
-      client.println(angle_z);
-      
-      client.print("Y : "); // sends the answer to the client
-      client.println(angle_y);
-
-      
-      client.print("Z : "); // sends the answer to the client
-      client.println(angle_z);
-      
-    }
-    
-    client.stop();
-    Serial.println("Client Disconnected.");
-  }
-*/
-}
-
 void Transmisja_BLE(){
 
   digitalWrite(17 , HIGH );
 
     if ( deviceConnected ) {
-            char txString[30];
-            dtostrf( pomiar , 2 , 2 , txString ); // float_val, min_width, digits_after_decimal, char_buffer
-            characteristicTX->setValue(txString); //seta o valor que a caracteristica notificará (enviar) 
-            //characteristicTX->notify(); // Envia o valor para o smartphone
+            String pomiarx = String( angle_x ) + " " + String( angle_y )+  " " + String( angle_z );
+            char txString[50];
+            pomiarx.toCharArray( txString , 50 );
+
+            //dtostrf( pomiarx , 2 , 2 , txString ); // float_val, min_width, digits_after_decimal, char_buffer
+            characteristicTX->setValue(txString); 
+            characteristicTX->notify(); 
   }
 }
 /*  ************************ Przerwania ********************* */
